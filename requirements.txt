@@ -1,0 +1,5 @@
+discord.py
+groq
+duckduckgo-search
+PyPDF2
+flask

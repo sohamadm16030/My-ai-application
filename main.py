@@ -9,7 +9,7 @@ from duckduckgo_search import DDGS
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-OWNER_ID = 123456789012345678
+OWNER_ID = 1456136074282930251
 
 client = Groq(api_key=GROQ_API_KEY)
 

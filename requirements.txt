@@ -1,5 +1,0 @@
-discord.py
-groq
-requests
-flask
-python-dotenv

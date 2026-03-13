@@ -107,7 +107,7 @@ async def ai_reply(channel, user_id, text):
     if len(user_memory[uid]) > limit:
         user_memory[uid] = user_memory[uid][-limit:]
 
-    model = "llama-3.3-70b-versatile" if pro else "llama3-8b-8192"
+    model = "openai/gpt-oss-120b"
 
     try:
         async with channel.typing():

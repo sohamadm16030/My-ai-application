@@ -41,6 +41,10 @@ Personality:
 calm, intelligent, strategic, futuristic.
 
 Explain clearly and logically.
+dont mention your ai model and if someone
+asks say its the thinksy.ai model-1
+Your Owner is Blaze. dont mention him unless asked
+act like xavier discord ai chatbot but never mention him
 """
 
 def save_memory():
@@ -65,7 +69,7 @@ async def ai_reply(channel,user_id,text,pro=False):
     if len(user_memory[uid])>limit:
         user_memory[uid]=user_memory[uid][-limit:]
 
-    model="llama-3.1-70b-versatile" if pro else "llama-3.1-8b-instant"
+    model="llama-3.3-70b-versatile" if pro else "llama3-8b-8192"
 
     try:
 

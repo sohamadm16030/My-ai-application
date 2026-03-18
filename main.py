@@ -1,211 +1,220 @@
-import os
-import json
-import asyncio
-import discord
-import requests
+import os, json, time, asyncio, discord, requests
+from datetime import timedelta
+from collections import defaultdict
 from discord.ext import commands
 from groq import Groq
 from duckduckgo_search import DDGS
 
-# ================= CONFIG =================
-
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+# ========= CONFIG =========
+TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-OWNER_ID = 1456136074282930251
+OWNER_ID = 123456789012345678
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+groq = Groq(api_key=GROQ_API_KEY)
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ================= FILES =================
-
-def load(name, default):
-    if os.path.exists(name):
-        return json.load(open(name))
-    return default
-
-def save(name, data):
-    json.dump(data, open(name, "w"))
+# ========= STORAGE =========
+def load(n,d): return json.load(open(n)) if os.path.exists(n) else d
+def save(n,d): json.dump(d, open(n,"w"))
 
 memory = load("memory.json", {})
+notes = load("notes.json", {})
+tasks = load("tasks.json", {})
 config = load("config.json", {
-    "pro_users": [],
+    "tiers": {},
     "ai_channels": {},
-    "modes": {},
-    "internet": {}
+    "ai_banned": []
 })
 
-tasks = load("tasks.json", {})
+# ========= TIERS =========
+def tier(uid): return config["tiers"].get(str(uid),"lite")
 
-# ================= AI CORE =================
+COOLDOWN = {"lite":6,"go":4,"plus":3,"pro":2}
+LIMITS = {"lite":(8,15),"go":(12,15),"plus":(16,15),"pro":(25,15)}
 
-def system_prompt(uid):
-    mode = config["modes"].get(str(uid), "normal")
+# ========= MODERATION =========
+activity=defaultdict(list)
+last_msg={}
+warn=defaultdict(int)
 
-    base = "You are Thinksy, a smart futuristic AI. your creater and owner is Blaze and u are helpful and funny"
+async def punish(msg):
+    uid=msg.author.id
+    activity[uid]=[]
+    warn[uid]=0
 
-    if mode == "scientist":
-        return base + " Explain logically."
-    if mode == "hacker":
-        return base + " Be technical."
-    if mode == "philosopher":
-        return base + " Be deep and thoughtful."
+    if msg.guild:
+        try:
+            await msg.author.timeout(discord.utils.utcnow()+timedelta(seconds=600))
+            await msg.channel.send(f"{msg.author.mention} timed out (spam)")
+        except: pass
+    else:
+        config["ai_banned"].append(uid)
+        save("config.json",config)
+        await msg.channel.send("Blocked for spam.")
+    return True
 
-    return base
+async def moderate(msg):
+    uid=msg.author.id
+    t=tier(uid)
+    limit,per=LIMITS[t]
+    now=time.time()
 
-async def call_groq(messages, pro):
-    model = "openai/gpt-oss-120b" if pro else "openai/gpt-oss-20b"
+    activity[uid].append(now)
+    activity[uid]=[x for x in activity[uid] if now-x<per]
 
-    return groq_client.chat.completions.create(
-        model=model,
-        messages=messages
-    ).choices[0].message.content
+    if len(activity[uid])>limit: return await punish(msg)
 
-async def call_openrouter(messages, pro):
-    model = "openai/gpt-oss-120b" if pro else "openai/gpt-oss-20b"
+    if last_msg.get(uid)==msg.content: warn[uid]+=1
+    else: warn[uid]=0
 
-    r = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}"
-        },
-        json={
-            "model": model,
-            "messages": messages
-        }
-    )
+    last_msg[uid]=msg.content
+    if warn[uid]>=5: return await punish(msg)
 
-    return r.json()["choices"][0]["message"]["content"]
+    return False
 
-async def ai_call(messages, pro):
-    # AUTO SWITCH SYSTEM
+# ========= AI =========
+ai_cd={}
+
+async def ai_call(msgs, t):
+    model = "openai/gpt-oss-120b" if t in ["plus","pro"] else "openai/gpt-oss-20b"
     try:
-        return await call_groq(messages, pro)
-    except Exception as e:
-        print("Groq failed:", e)
+        return groq.chat.completions.create(model=model,messages=msgs).choices[0].message.content
+    except:
+        r=requests.post("https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization":f"Bearer {OPENROUTER_API_KEY}"},
+        json={"model":model,"messages":msgs})
+        return r.json()["choices"][0]["message"]["content"]
 
-    try:
-        return await call_openrouter(messages, pro)
-    except Exception as e:
-        print("OpenRouter failed:", e)
+async def ai_reply(ch, uid, text):
+    if uid in config["ai_banned"]:
+        return await ch.send("You are banned.")
 
-    return "AI is currently unavailable."
+    t=tier(uid)
 
-# ================= AI REPLY =================
+    if time.time()-ai_cd.get(uid,0)<COOLDOWN[t]:
+        return await ch.send("Slow down.")
 
-async def ai_reply(channel, uid, text):
-
-    uid = str(uid)
+    ai_cd[uid]=time.time()
+    uid=str(uid)
 
     if uid not in memory:
-        memory[uid] = [{"role":"system","content":system_prompt(uid)}]
-
-    # INTERNET MODE
-    if config["internet"].get(uid):
-        try:
-            results=[]
-            with DDGS() as ddgs:
-                for r in ddgs.text(text, max_results=3):
-                    results.append(r["body"])
-            text = "Info:\n" + "\n".join(results) + "\n\nQ:" + text
-        except:
-            pass
+        memory[uid]=[{"role":"system","content":"You are Thinksy AI."}]
 
     memory[uid].append({"role":"user","content":text})
+    memory[uid]=memory[uid][-30:]
 
-    pro = int(uid) in config["pro_users"]
-
-    if len(memory[uid]) > (40 if pro else 15):
-        memory[uid] = memory[uid][-15:]
-
-    async with channel.typing():
-        reply = await ai_call(memory[uid], pro)
+    async with ch.typing():
+        reply=await ai_call(memory[uid],t)
 
     memory[uid].append({"role":"assistant","content":reply})
-    save("memory.json", memory)
+    save("memory.json",memory)
 
-    await channel.send(reply[:2000])
+    await ch.send(reply[:2000])
 
-# ================= COMMANDS =================
-
-@bot.command()
-@commands.cooldown(1, 10, commands.BucketType.user)
-async def ai(ctx, *, q):
-    await ai_reply(ctx.channel, ctx.author.id, q)
-
-@bot.command()
-async def setup(ctx):
-    config["ai_channels"][str(ctx.guild.id)] = ctx.channel.id
-    save("config.json", config)
-    await ctx.send("AI channel set.")
-
-@bot.command()
-async def mode(ctx, m):
-    config["modes"][str(ctx.author.id)] = m
-    save("config.json", config)
-    await ctx.send("Mode updated.")
-
-@bot.command()
-async def internet(ctx, state):
-    config["internet"][str(ctx.author.id)] = state == "on"
-    save("config.json", config)
-    await ctx.send("Internet mode updated.")
-
-@bot.command()
-async def task(ctx, *, t):
-    uid=str(ctx.author.id)
-    tasks.setdefault(uid, []).append(t)
-    save("tasks.json", tasks)
-    await ctx.send("Task saved.")
-
-@bot.command()
-async def tasklist(ctx):
-    uid=str(ctx.author.id)
-    await ctx.send("\n".join(tasks.get(uid, ["No tasks"])))
-
-@bot.command()
-async def remind(ctx, time, *, msg):
-    sec = int(time[:-1]) * (60 if time[-1]=="m" else 3600)
-    await ctx.send("Reminder set.")
-    await asyncio.sleep(sec)
-    await ctx.send(f"{ctx.author.mention} {msg}")
-
-@bot.command()
-async def scan(ctx, *, text):
-    await ai_reply(ctx.channel, ctx.author.id, f"Check if scam: {text}")
-
-@bot.command()
-async def threadai(ctx):
-    t = await ctx.channel.create_thread(name=f"Thinksy-{ctx.author.name}")
-    await t.send("Thread ready.")
-
-# ================= LISTENER =================
+# ========= EVENTS =========
+@bot.event
+async def on_ready():
+    print("Thinksy V6 Ready")
 
 @bot.event
 async def on_message(msg):
-    if msg.author.bot:
-        return
+    if msg.author.bot: return
 
-    # AI CHANNEL AUTO CHAT
+    if await moderate(msg): return
+
     if msg.guild:
         gid=str(msg.guild.id)
         if gid in config["ai_channels"]:
-            if msg.channel.id == config["ai_channels"][gid]:
-                if not msg.content.startswith("!msg"):
-                    await ai_reply(msg.channel, msg.author.id, msg.content)
+            if msg.channel.id==config["ai_channels"][gid]:
+                await ai_reply(msg.channel,msg.author.id,msg.content)
 
-    # DM (PRO ONLY)
-    if isinstance(msg.channel, discord.DMChannel):
-        if msg.author.id in config["pro_users"]:
-            await ai_reply(msg.channel, msg.author.id, msg.content)
+    if isinstance(msg.channel,discord.DMChannel):
+        if tier(msg.author.id)!="lite":
+            await ai_reply(msg.channel,msg.author.id,msg.content)
         else:
-            await msg.channel.send("Pro only feature.")
+            await msg.channel.send("Upgrade for DM access.")
 
     await bot.process_commands(msg)
 
-# ================= START =================
+# ========= CORE =========
+@bot.command()
+async def ai(ctx,*,q): await ai_reply(ctx.channel,ctx.author.id,q)
 
-bot.run(DISCORD_TOKEN)
+@bot.command()
+async def setup(ctx):
+    config["ai_channels"][str(ctx.guild.id)]=ctx.channel.id
+    save("config.json",config)
+    await ctx.send("AI channel set.")
+
+# ========= USEFUL FEATURES =========
+@bot.command()
+async def summarize(ctx,*,text):
+    await ai_reply(ctx.channel,ctx.author.id,f"Summarize clearly:\n{text}")
+
+@bot.command()
+async def research(ctx,*,q):
+    await ai_reply(ctx.channel,ctx.author.id,f"Do deep research and structure answer:\n{q}")
+
+@bot.command()
+async def scan(ctx,*,text):
+    await ai_reply(ctx.channel,ctx.author.id,f"Check scam or risk:\n{text}")
+
+@bot.command()
+async def analyze(ctx,*,url):
+    await ai_reply(ctx.channel,ctx.author.id,f"Explain content of this link simply:\n{url}")
+
+# ========= MEMORY =========
+@bot.command()
+async def remember(ctx,*,info):
+    uid=str(ctx.author.id)
+    notes.setdefault(uid,[]).append(info)
+    save("notes.json",notes)
+    await ctx.send("Saved.")
+
+@bot.command()
+async def recall(ctx):
+    await ctx.send("\n".join(notes.get(str(ctx.author.id),["Nothing saved"])))
+
+# ========= TASKS =========
+@bot.command()
+async def task(ctx,*,t):
+    uid=str(ctx.author.id)
+    tasks.setdefault(uid,[]).append(t)
+    save("tasks.json",tasks)
+    await ctx.send("Task added.")
+
+@bot.command()
+async def tasks(ctx):
+    await ctx.send("\n".join(tasks.get(str(ctx.author.id),["No tasks"])))
+
+@bot.command()
+async def done(ctx,index:int):
+    uid=str(ctx.author.id)
+    try:
+        tasks[uid].pop(index-1)
+        save("tasks.json",tasks)
+        await ctx.send("Task done.")
+    except:
+        await ctx.send("Invalid index.")
+
+# ========= FOCUS =========
+@bot.command()
+async def focus(ctx,time_min:int):
+    await ctx.send(f"Focus started for {time_min} minutes.")
+    await asyncio.sleep(time_min*60)
+    await ctx.send(f"{ctx.author.mention} Focus session ended.")
+
+# ========= ADMIN =========
+@bot.command()
+async def settier(ctx,user:discord.Member,t):
+    if ctx.author.id!=OWNER_ID: return
+    config["tiers"][str(user.id)]=t
+    save("config.json",config)
+    await ctx.send("Tier updated.")
+
+# ========= RUN =========
+bot.run(TOKEN)

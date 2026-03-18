@@ -45,7 +45,7 @@ tasks = load("tasks.json", {})
 def system_prompt(uid):
     mode = config["modes"].get(str(uid), "normal")
 
-    base = "You are Thinksy, a smart futuristic AI."
+    base = "You are Thinksy, a smart futuristic AI. your creater and owner is Blaze and u are helpful and funny"
 
     if mode == "scientist":
         return base + " Explain logically."

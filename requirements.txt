@@ -3,3 +3,4 @@ groq
 duckduckgo-search
 PyPDF2
 flask
+requests
